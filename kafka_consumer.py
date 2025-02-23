@@ -6,14 +6,14 @@
 
 from kafka import KafkaConsumer
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from pyspark.sql.types import StructType, StructField, LongType, StringType, IntegerType
 import json
 
 # Initialize Spark Session
 spark = SparkSession.builder.appName("YouTubeKafkaConsumer").getOrCreate()
 
 # Kafka Configuration
-KAFKA_TOPIC = "youtube_videos"
+KAFKA_TOPIC = "youtube_data"
 KAFKA_BROKER = "localhost:9092"
 consumer = KafkaConsumer(
     KAFKA_TOPIC,
@@ -21,38 +21,60 @@ consumer = KafkaConsumer(
     value_deserializer=lambda v: json.loads(v.decode('utf-8'))
 )
 
-# Define Schema
-schema = StructType([
+# Define Schema for Channel Metadata
+channel_schema = StructType([
+    StructField("channel_id", StringType(), True),
+    StructField("channel_name", StringType(), True),
+    StructField("subscriber_count", LongType(), True),
+    StructField("views_count", LongType(), True),
+    StructField("total_videos", LongType(), True),
+    StructField("playlist_id", StringType(), True)
+])
+
+# Define Schema for Video Statistics
+video_schema = StructType([
+    StructField("playlist_id", StringType(), True),
+    StructField("channel_name", StringType(), True),
     StructField("video_id", StringType(), True),
     StructField("title", StringType(), True),
-    StructField("thumbnail", StringType(), True),
+    StructField("description", StringType(), True),
     StructField("tags", StringType(), True),
-    StructField("like_count", IntegerType(), True),   # Ensure this is INT
-    StructField("views_count", IntegerType(), True),  # Ensure this is INT
-    StructField("comments_count", IntegerType(), True),  # Ensure this is INT
-    StructField("upload_time", StringType(), True),
+    StructField("publish_at", StringType(), True),
+    StructField("views_count", LongType(), True),
+    StructField("like_count", LongType(), True),
+    StructField("comment_count",LongType(), True),
     StructField("video_duration", StringType(), True)
 ])
 
-# HDFS Path (Ensure NameNode & Port are correct)
-HDFS_PATH = "hdfs://localhost:9000/user/hadoop/youtube_data/video_stats"
+# HDFS Paths
+HDFS_CHANNEL_PATH = "hdfs://localhost:9000/user/hadoop/youtube_data/channel_stats"
+HDFS_VIDEO_PATH = "hdfs://localhost:9000/user/hadoop/youtube_data/video_stats"
 
 def process_and_store():
     for message in consumer:
-        data = message.value  # Get Kafka message
-        
-        # 🔹 Convert numeric values from string to int
-        data["like_count"] = int(data["like_count"]) if "like_count" in data and data["like_count"].isdigit() else 0
-        data["views_count"] = int(data["views_count"]) if "views_count" in data and data["views_count"].isdigit() else 0
-        data["comments_count"] = int(data["comments_count"])if "comments_count" in data and data["comments_count"].isdigit() else 0
-        
-        # Create Spark DataFrame
-        df = spark.createDataFrame([data], schema=schema)
-        
-        # Write to HDFS
-        df.write.mode("append").parquet(HDFS_PATH)  
-        
-        print(f"Stored: {data}")
+        data = message.value
+
+        if data["type"] == "channel":
+            # Convert numeric fields to integers
+            data["data"]["subscriber_count"] = int(data["data"]["subscriber_count"])
+            data["data"]["views_count"] = int(data["data"]["views_count"])
+            data["data"]["total_videos"] = int(data["data"]["total_videos"])
+
+            df = spark.createDataFrame([data["data"]], schema=channel_schema)
+            df.write.mode("append").parquet(HDFS_CHANNEL_PATH)
+            print(f"Stored Channel Data: {data['data']}")
+
+        elif data["type"] == "video":
+            # Convert numeric fields to integers
+            data["data"]["views_count"] = int(data["data"]["views_count"])
+            data["data"]["like_count"] = int(data["data"]["like_count"])
+            data["data"]["comment_count"] = int(data["data"]["comment_count"])
+
+            df = spark.createDataFrame([data["data"]], schema=video_schema)
+            df.write.mode("append").parquet(HDFS_VIDEO_PATH)
+            print(f"Stored Video Data: {data['data']}")
+
+
 
 # Run the function
 process_and_store()
